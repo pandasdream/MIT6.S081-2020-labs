@@ -696,3 +696,14 @@ procdump(void)
     printf("\n");
   }
 }
+
+void
+proccalcfree(uint64 *nproc)
+{
+  *nproc = 0;
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(!p) continue;
+    if(p->state != UNUSED) *nproc += 1;
+  }
+}
