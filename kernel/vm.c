@@ -440,3 +440,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void
+vmprint(pagetable_t pgt)
+{
+  printf("page table %p\n", pgt);
+  pte_t *pte0 = (pte_t*)pgt;
+  int index0 = 0;
+  // pte0 < pgt + 512 or pte0 < pgt + 4096
+  // pgt 是指针 指针的加法不是直接加
+  for(pte0 = pgt; pte0 < pgt + 512; pte0++) {
+    // printf("%p\n", pte0);
+    if((PTE_V & *pte0) != PTE_V) {
+      index0++;
+      continue;
+    }
+    // #define PTE2PA(pa) ((((uint64)pa) >> 10) << 12) 后10中存在标志位
+    printf("..%d: pte %p pa %p\n", index0++, *pte0, PTE2PA(*pte0));
+    pte_t *pte1;
+    int index1 = 0;
+    for(pte1 = (pte_t*)PTE2PA(*pte0); pte1 < (pte_t*)PTE2PA(*pte0) + 512; pte1++) {
+      if((PTE_V & *pte1) != PTE_V) {
+        index1++;
+        continue;
+      }
+      printf(".. ..%d: pte %p pa %p\n", index1++, *pte1, PTE2PA(*pte1));
+      pte_t *pte2;
+      int index2 = 0;
+      for(pte2 = (pte_t*)PTE2PA(*pte1); pte2 < (pte_t*)PTE2PA(*pte1) + 512; pte2++) {
+        if((PTE_V & *pte2) != PTE_V) {
+          index2++;
+          continue;
+        }
+        printf(".. .. ..%d: pte %p pa %p\n", index2++, *pte2, PTE2PA(*pte2));
+      }
+    }
+  }
+}
