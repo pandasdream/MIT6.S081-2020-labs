@@ -18,6 +18,7 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
+static void proc_freekpagetable(pagetable_t kpagetable); 
 
 extern char trampoline[]; // trampoline.S
 
@@ -121,12 +122,23 @@ found:
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+  // Create user kernel page table.
+  p->kpagetable = kvmprocinit();
+  char* pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK(0);
+  kvmprocmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = KSTACK(0);
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  // struct proc *p1;
+  // for(p1 = proc; p1 < &proc[NPROC]; p1++) {
+  //   uint64 va = KSTACK((int) (p1 - proc));
+  //   uint64 pa = kvmpa(va);
+  //   kvmprocmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  // }
   return p;
 }
 
@@ -138,10 +150,19 @@ freeproc(struct proc *p)
 {
   if(p->trapframe)
     kfree((void*)p->trapframe);
+  // free kernel stack page of user kernel page table
+  pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+  if(pte == 0)
+    panic("freeproc: free kstack");
+  kfree((void*)PTE2PA(*pte));
+  p->kstack = 0;
   p->trapframe = 0;
+  if(p->kpagetable)
+    proc_freekpagetable(p->kpagetable);
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  p->kpagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -193,6 +214,22 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+void
+proc_freekpagetable(pagetable_t kpagetable)
+{
+  // you need to free page table without freeing physical leaf pages
+  for(int i = 0; i < 512; i++) {
+    pte_t pte = kpagetable[i];
+    if(pte & PTE_V) {
+      if((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        uint64 pagetable = PTE2PA(pte);
+        proc_freekpagetable((pagetable_t) pagetable);
+      }
+    }
+  }
+  kfree((void*)kpagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,8 +510,11 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // Switch satp reg to user kernel page table
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
-
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -486,6 +526,7 @@ scheduler(void)
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
+      kvminithart();
       asm volatile("wfi");
     }
 #else
