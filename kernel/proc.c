@@ -35,12 +35,13 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -123,22 +124,17 @@ found:
   }
 
   // Create user kernel page table.
-  p->kpagetable = kvmprocinit();
+  p->kpagetable = kuvminit();
   char* pa = kalloc();
   if(pa == 0)
     panic("kalloc");
   uint64 va = KSTACK(0);
-  kvmprocmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  kuvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   p->kstack = KSTACK(0);
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-  // struct proc *p1;
-  // for(p1 = proc; p1 < &proc[NPROC]; p1++) {
-  //   uint64 va = KSTACK((int) (p1 - proc));
-  //   uint64 pa = kvmpa(va);
-  //   kvmprocmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-  // }
+  // printf("pagetable = %p,kpagetable = %p\n",p->pagetable,p->kpagetable);
   return p;
 }
 
@@ -228,6 +224,7 @@ proc_freekpagetable(pagetable_t kpagetable)
         proc_freekpagetable((pagetable_t) pagetable);
       }
     }
+    // kpagetable[i] = 0;
   }
   kfree((void*)kpagetable);
 }
@@ -257,6 +254,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  ukvmmapcopy(p->pagetable, p->kpagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -275,16 +273,21 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint sz, oldsz;
   struct proc *p = myproc();
 
   sz = p->sz;
+  oldsz = p->sz;
+  if(sz + n >= PLIC)
+    return -1;
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    ukvmmapcopy(p->pagetable, p->kpagetable, p->sz, sz);
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, oldsz, oldsz + n);
+    ukvmdealloc(p->kpagetable, oldsz, oldsz + n);
   }
   p->sz = sz;
   return 0;
@@ -306,6 +309,13 @@ fork(void)
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+
+  // Copy user virtual memory mapping from parent to child
+  if(ukvmmapcopy(np->pagetable, np->kpagetable, 0, p->sz) < 0) {
     freeproc(np);
     release(&np->lock);
     return -1;
