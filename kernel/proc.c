@@ -125,6 +125,7 @@ found:
 
   // Create user kernel page table.
   p->kpagetable = kuvminit();
+  // User kernel stack
   char* pa = kalloc();
   if(pa == 0)
     panic("kalloc");
@@ -284,10 +285,10 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
-    ukvmmapcopy(p->pagetable, p->kpagetable, p->sz, sz);
+    ukvmmapcopy(p->pagetable, p->kpagetable, oldsz, oldsz + n);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, oldsz, oldsz + n);
-    ukvmdealloc(p->kpagetable, oldsz, oldsz + n);
+    // ukvmdealloc(p->kpagetable, oldsz, oldsz + n);
   }
   p->sz = sz;
   return 0;

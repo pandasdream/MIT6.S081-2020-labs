@@ -396,6 +396,8 @@ ukvmmapcopy(pagetable_t old, pagetable_t new,uint64 oldsz, uint64 newsz)
 {
   pte_t *newpte, *oldpte;
   uint64 i;
+  if(newsz < oldsz)
+    return 0;
   oldsz = PGROUNDDOWN(oldsz);
   for(i = oldsz; i < newsz; i += PGSIZE) {
     if((oldpte = walk(old, i, 0)) == 0)
@@ -403,11 +405,9 @@ ukvmmapcopy(pagetable_t old, pagetable_t new,uint64 oldsz, uint64 newsz)
     if((*oldpte & PTE_V) == 0)
       panic("ukvmmapcopy: page not present");
     newpte = walk(new, i, 1);
-    if(newpte == 0) {
-      uvmunmap(new, 0, i / PGSIZE, 0);
-      return -1;
-    }
-    *newpte = *oldpte & ~PTE_U;
+    if(newpte == 0)
+      panic("ukvmmapcopy: walk fail");
+    *newpte = *oldpte & (~PTE_U);
   }
   return 0;
 }
