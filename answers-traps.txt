@@ -1,0 +1,33 @@
+Q1: Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+
+RISC-V的函数调用过程参数优先使用寄存器传递，即a0~a7共8个寄存器。返回值可以放在a0和a1寄存器。printf的参数13保存在a2寄存器。
+
+Q2: Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.
+
+从代码可以看出，这两个都被内联优化处理了。main中的f调用直接使用了结果12，而f中的函数g调用直接内联在f中了。
+
+Q3: At what address is the function printf located?
+
+在0x630的位置
+
+Q4: What value is in the register ra just after the jalr to printf in main?
+
+值应该为0x38，即函数的返回地址。
+
+跳转并链接指令（jal）具有双重功能。若将下一条指令PC + 4的地址保存到目标寄存器中，通常是返回地址寄存器ra，便可以用它来实现过程调用。如果使用零寄存器（x0）替换ra作为目标寄存器，则可以实现无条件跳转，因为x0不能更改。像分支一样，jal将其20位分支地址乘以2，进行符号扩展后再添加到PC上，便得到了跳转地址。
+
+跳转和链接指令的寄存器版本（jalr）同样是多用途的。它可以调用地址是动态计算出来的函数，或者也可以实现调用返回（只需ra作为源寄存器，零寄存器（x0）作为目的寄存器）。Switch和case语句的地址跳转，也可以使用jalr指令，目的寄存器设为x0。
+
+Q5: Run the following code.
+
+unsigned int i = 0x00646c72;
+printf("H%x Wo%s", 57616, &i);
+What is the output? Here's an ASCII table that maps bytes to characters.
+
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+
+结果为：He110 World; 不要修改为0x726c6400; 57616不需要进行改变，编译器会进行转换。
+
+Q6: In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen? printf("x=%d y=%d", 3);
+
+应该打印出寄存器a2的值，因为printf会从a2寄存器中读取第三个参数作为y的值。
