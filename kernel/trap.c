@@ -68,8 +68,28 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
+    // TODO Lazy allocation
+    if(r_scause() == 13 || r_scause() == 15) {
+      // Page Fault
+      // vmprint(p->pagetable);
+      uint64 va = PGROUNDDOWN(r_stval());
+      char* pa = kalloc();
+      if(pa == 0) {
+        printf("usertrap(): kalloc fail\n");
+        p->killed = 1;
+      }
+      else if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, PTE_W|PTE_X|PTE_R|PTE_U) != 0) {
+        kfree(pa);
+        printf("usertrap(): mappages fail\n");
+        p->killed = 1;
+      }
+      // else {
+      //   vmprint(p->pagetable);
+      // }
+    }
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    usertrapret();
     p->killed = 1;
   }
 

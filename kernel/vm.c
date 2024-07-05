@@ -181,16 +181,25 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      // no pagetable correspond to the page to be unmapped
+      // return just like wu unmapped the page
+      return;
+      // panic("uvmunmap: walk");
+    if((*pte & PTE_V) == 0) {
+      // find a pagetable but pte is invalid
+      *pte = 0;
+      return;
+      // panic("uvmunmap: not mapped");
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
+    // printf("uvmunmap: %p\n", a);
     *pte = 0;
+    // vmprint(pagetable);
   }
 }
 
@@ -283,7 +292,8 @@ freewalk(pagetable_t pagetable)
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
-      panic("freewalk: leaf");
+      // valid pde but 
+      // panic("freewalk: leaf");
     }
   }
   kfree((void*)pagetable);
@@ -295,7 +305,7 @@ void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
-    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+    uvmunmap(pagetable, 0, 512, 1);
   freewalk(pagetable);
 }
 
@@ -438,5 +448,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void
+vmprint(pagetable_t pgt)
+{
+  printf("page table %p\n", pgt);
+  pte_t *pte0 = (pte_t*)pgt;
+  int index0 = 0;
+  // pte0 < pgt + 512 or pte0 < pgt + 4096
+  // pgt 是指针 指针的加法不是直接加
+  for(pte0 = pgt; pte0 < pgt + 512; pte0++) {
+    // printf("%p\n", pte0);
+    if((PTE_V & *pte0) != PTE_V) {
+      index0++;
+      continue;
+    }
+    // #define PTE2PA(pa) ((((uint64)pa) >> 10) << 12) 后10中存在标志位
+    printf("..%d: pte %p pa %p\n", index0++, *pte0, PTE2PA(*pte0));
+    pte_t *pte1;
+    int index1 = 0;
+    for(pte1 = (pte_t*)PTE2PA(*pte0); pte1 < (pte_t*)PTE2PA(*pte0) + 512; pte1++) {
+      if((PTE_V & *pte1) != PTE_V) {
+        index1++;
+        continue;
+      }
+      printf(".. ..%d: pte %p pa %p\n", index1++, *pte1, PTE2PA(*pte1));
+      pte_t *pte2;
+      int index2 = 0;
+      for(pte2 = (pte_t*)PTE2PA(*pte1); pte2 < (pte_t*)PTE2PA(*pte1) + 512; pte2++) {
+        if((PTE_V & *pte2) != PTE_V) {
+          index2++;
+          continue;
+        }
+        printf(".. .. ..%d: pte %p pa %p\n", index2++, *pte2, PTE2PA(*pte2));
+      }
+    }
   }
 }
