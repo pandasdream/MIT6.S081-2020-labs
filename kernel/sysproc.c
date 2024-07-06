@@ -47,9 +47,22 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  myproc()->sz = addr + n;
+  // overflow check is stupid and silly
+  if(n >= 0 && addr + n >= addr) {
+    myproc()->sz += n;
+  }
+  // handle negative sbrk() arguments
+  else if(n < 0){
+    if(addr + n < 0)
+      n = -addr;
+    myproc()->sz = uvmdealloc(myproc()->pagetable, addr, addr + n);
+  }
+  else {
+    return -1;
+  }
   // if(growproc(n) < 0)
   //   return -1;
+  // printf("sys_sbrk(): proc()->sz = %p\n", myproc()->sz);
   return addr;
 }
 

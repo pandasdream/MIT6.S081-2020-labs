@@ -72,24 +72,35 @@ usertrap(void)
     if(r_scause() == 13 || r_scause() == 15) {
       // Page Fault
       // vmprint(p->pagetable);
+      // Kill a process if it page-faults on a virtual memory address higher than any allocated with sbrk()
+      if(r_stval() >= p->sz) {
+        // printf("va %p higher than p->sz %p\n", r_stval(), p->sz);
+        p->killed = 1;
+        exit(-1);
+      }
+      if(r_stval() < p->trapframe->sp) {
+        p->killed = 1;
+        exit(-1);
+      }
       uint64 va = PGROUNDDOWN(r_stval());
       char* pa = kalloc();
       if(pa == 0) {
         printf("usertrap(): kalloc fail\n");
         p->killed = 1;
+        exit(-1);
       }
       else if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, PTE_W|PTE_X|PTE_R|PTE_U) != 0) {
         kfree(pa);
         printf("usertrap(): mappages fail\n");
         p->killed = 1;
       }
-      // else {
-      //   vmprint(p->pagetable);
-      // }
+      else {
+        memset(pa, 0, PGSIZE);
+        usertrapret();
+      }
     }
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    usertrapret();
+    // printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
 
