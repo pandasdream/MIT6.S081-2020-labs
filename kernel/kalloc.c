@@ -23,10 +23,17 @@ struct {
   struct run *freelist;
 } kmem;
 
+int pgref[32730];
+struct spinlock pglock;
+
 void
 kinit()
 {
+  // Page Reference pgref
+  // printf("%p %p %d\n", (uint64)end, PHYSTOP, (PHYSTOP - (uint64)end) / PGSIZE);
   initlock(&kmem.lock, "kmem");
+  initlock(&pglock, "pglock");
+  for(int i = 0; i < 32730; i++) pgref[i] = 1;
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -50,7 +57,16 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
+  acquire(&pglock);
+  pgref[((uint64)pa - (uint64)end) / PGSIZE]--;
+  // printf("page %d decrease ref\n", ((uint64)pa - (uint64)end) / PGSIZE);
+  if(pgref[((uint64)pa - (uint64)end) / PGSIZE] > 0) {
+    release(&pglock);
+    // Ref is not zero or one
+    return;
+  }
+  release(&pglock);
+  // printf("free page %d!\n", ((uint64)pa - (uint64)end) / PGSIZE);
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -74,6 +90,10 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
+  if(r) {
+    pgref[((uint64)r - (uint64)end) / PGSIZE] ++;
+    // printf("page %d increase ref\n", ((uint64)r - (uint64)end) / PGSIZE);
+  }
   release(&kmem.lock);
 
   if(r)

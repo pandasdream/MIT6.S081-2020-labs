@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -156,7 +157,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
+    if((*pte & PTE_V) != 0 && (*pte & PTE_COW) == 0)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
@@ -305,13 +306,16 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+extern char end[];
+extern int pgref[];
+extern struct spinlock pglock;
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,19 +323,23 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = PTE_FLAGS(*pte) & (~PTE_W);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    *pte = (*pte & (~PTE_W)) | PTE_COW;
+    if(mappages(new, i, PGSIZE, pa, flags | PTE_COW) != 0){
       goto err;
     }
+    acquire(&pglock);
+    // multi thread error ？
+    pgref[(pa - (uint64)end) / PGSIZE]++;
+    release(&pglock);
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  printf("uvmcopy(): mappage fail\n");
   return -1;
 }
 
@@ -355,10 +363,47 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t* pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    // pa0 = walkaddr(pagetable, va0);
+    if(va0 >= MAXVA)
+      return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    if((*pte & PTE_COW) == 0) {
+      pa0 = PTE2PA(*pte);
+    }
+    else {
+      uint64 pa = PTE2PA(*pte);
+      acquire(&pglock);
+      if(pgref[(pa - (uint64)end) / PGSIZE] == 1) {
+        // no other proc maps this physical page, so this proc can get it
+        *pte = (*pte & (~PTE_COW)) | PTE_W ;
+        pa0 = pa;
+      } else {
+        // alloc a page and map the page
+        char* mem;
+        if((mem = kalloc()) == 0) {
+          // kill the proc if there is no free memory how to kill ?
+          release(&pglock);
+          printf("copyout(): no free memory\n");
+          return -1;
+        }
+        uint flags = PTE_FLAGS(*pte) & (~PTE_COW);
+        pgref[(pa - (uint64)end) / PGSIZE]--;
+        memmove(mem, (char*)pa, PGSIZE);
+        mappages(pagetable, va0, PGSIZE, (uint64)mem, flags | PTE_W);
+        pa0 = (uint64)mem;
+      }
+      release(&pglock);
+    }
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -438,5 +483,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void
+vmprint(pagetable_t pgt)
+{
+  printf("page table %p\n", pgt);
+  pte_t *pte0 = (pte_t*)pgt;
+  int index0 = 0;
+  // pte0 < pgt + 512 or pte0 < pgt + 4096
+  // pgt 是指针 指针的加法不是直接加
+  for(pte0 = pgt; pte0 < pgt + 512; pte0++) {
+    // printf("%p\n", pte0);
+    if((PTE_V & *pte0) != PTE_V) {
+      index0++;
+      continue;
+    }
+    // #define PTE2PA(pa) ((((uint64)pa) >> 10) << 12) 后10中存在标志位
+    printf("..%d: pte %p pa %p\n", index0++, *pte0, PTE2PA(*pte0));
+    pte_t *pte1;
+    int index1 = 0;
+    for(pte1 = (pte_t*)PTE2PA(*pte0); pte1 < (pte_t*)PTE2PA(*pte0) + 512; pte1++) {
+      if((PTE_V & *pte1) != PTE_V) {
+        index1++;
+        continue;
+      }
+      printf(".. ..%d: pte %p pa %p\n", index1++, *pte1, PTE2PA(*pte1));
+      pte_t *pte2;
+      int index2 = 0;
+      for(pte2 = (pte_t*)PTE2PA(*pte1); pte2 < (pte_t*)PTE2PA(*pte1) + 512; pte2++) {
+        if((PTE_V & *pte2) != PTE_V) {
+          index2++;
+          continue;
+        }
+        printf(".. .. ..%d: pte %p pa %p\n", index2++, *pte2, PTE2PA(*pte2));
+      }
+    }
   }
 }

@@ -29,6 +29,9 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+extern char end[];
+extern int pgref[];
+extern struct spinlock pglock;
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -65,9 +68,46 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 15 || r_scause() == 13) {
+    // page fault
+    uint64 va = PGROUNDDOWN(r_stval());
+    pte_t* pte = walk(p->pagetable, va, 0);
+    if(pte == 0) {
+      p->killed = 1;
+      exit(-1);
+    }
+    if(*pte & PTE_COW) {
+      uint64 pa = PTE2PA(*pte);
+      acquire(&pglock);
+      if(pgref[(pa - (uint64)end) / PGSIZE] == 1) {
+        // no other proc maps this physical page, so this proc can get it
+        *pte = (*pte & (~PTE_COW)) | PTE_W;
+      } else {
+        // alloc a page and map the page
+        char* mem;
+        if((mem = kalloc()) == 0) {
+          // kill the proc if there is no free memory
+          p->killed = 1;
+        }
+        else {
+          pgref[(pa - (uint64)end) / PGSIZE]--;
+          uint flags = PTE_FLAGS(*pte) & (~PTE_COW);
+          memmove(mem, (char*)pa, PGSIZE);
+          mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags | PTE_W);
+        }
+      }
+      release(&pglock);
+    } else {
+      printf("1\n");
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
+    printf("2\n");
+    vmprint(p->pagetable);
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -137,13 +177,14 @@ kerneltrap()
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
-  
+  // vmprint(myproc()->pagetable);
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
   if(intr_get() != 0)
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
+    for(int i = 0; i < 32730; i++) printf("%d", pgref[i]);
     printf("scause %p\n", scause);
     printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
     panic("kerneltrap");
