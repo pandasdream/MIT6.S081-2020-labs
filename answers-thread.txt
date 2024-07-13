@@ -1,0 +1,5 @@
+Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing. Submit your sequence with a short explanation in answers-thread.txt
+向同一个map中插入键值对的过程中可能遇到的并发错误有
+1. 两个线程先后对同一键值对的值更新或者分别进行写入和更新，但一个原本靠后的线程在靠前的线程之前得到了执行
+2. 两个线程向map中都要插入，因为调度的问题导致两个线程都向同一块物理空间写，导致写错乱
+不发生写入操作就不会存在并发错误
