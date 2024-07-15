@@ -6,7 +6,6 @@ struct buf {
   struct sleeplock lock;
   uint refcnt;
   uint timestamp;
-  struct buf *prev; // LRU cache list
   struct buf *next;
   uchar data[BSIZE];
 };

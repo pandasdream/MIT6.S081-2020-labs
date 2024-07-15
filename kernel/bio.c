@@ -24,7 +24,6 @@
 #include "buf.h"
 
 #define BUCKETS 13
-extern struct spinlock tickslock;
 extern uint ticks;
 
 struct {
@@ -47,15 +46,8 @@ binit(void)
   for(b = bcache.buf; b < bcache.buf + NBUF; b++){
     initsleeplock(&b->lock, "buffer");
     b->timestamp = 0;
-    b->next = 0;
-    b->prev = 0;
-    if(hash_bucket[i] == 0)
-      hash_bucket[i] = b;
-    else {
-      hash_bucket[i]->next = b;
-      b->prev = hash_bucket[i];
-      hash_bucket[i] = b;
-    }
+    b->next = hash_bucket[i];
+    hash_bucket[i] = b;
     i = (i + 1) % BUCKETS;
   }
 }
@@ -68,10 +60,11 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
   int i = blockno % BUCKETS;
+
   acquire(&bcache_lock[i]);
 
   // Is the block already cached?
-  for(b = hash_bucket[i]; b; b = b->prev) {
+  for(b = hash_bucket[i]; b; b = b->next) {
     if(b->dev == dev && b->blockno == blockno) {
       b->refcnt ++;
       acquiresleep(&b->lock);
@@ -79,13 +72,17 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
-  release(&bcache_lock[i]);
+  // too early, may cause remap, then refree, then crash
+  // release(&bcache_lock[i]);
+
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  struct buf* lru_buf = 0;
+  struct buf* lru_buf;
+  search:
+  lru_buf = 0;
+  acquire(&bcache.lock);
   for(i = 0; i < BUCKETS; i ++) {
-    acquire(&bcache_lock[i]);
-    for(b = hash_bucket[i]; b; b = b->prev) {
+    for(b = hash_bucket[i]; b; b = b->next) {
       if(b->refcnt == 0) {
         if(lru_buf == 0)
           lru_buf = b;
@@ -94,48 +91,48 @@ bget(uint dev, uint blockno)
         }
       }
     }
-    release(&bcache_lock[i]);
   }
   if(lru_buf == 0)
-    panic("bget(): no bufs");
+    panic("bget(): no buffers");
   int source = ((lru_buf - bcache.buf) / sizeof(struct buf)) % BUCKETS;
   int target = blockno % BUCKETS;
-  if(source != target) {
-    acquire(&bcache.lock);
+  // get source and target in turn to reduce redundancy
+  if(source != target)
     acquire(&bcache_lock[source]);
-    acquire(&bcache_lock[target]);
-    struct buf *pr, *ne;
-    pr = lru_buf->prev;
-    ne = lru_buf->next;
-    if(pr)
-      pr->next = ne;
-    if(ne)
-      ne->prev = pr;
-    lru_buf->prev = hash_bucket[target];
-    if(hash_bucket[target])
-      hash_bucket[target]->next = lru_buf;
-    hash_bucket[target] = lru_buf;
-    
-    lru_buf->dev = dev;
-    lru_buf->blockno = blockno;
-    lru_buf->valid = 0;
-    lru_buf->refcnt = 1;
-    acquiresleep(&lru_buf->lock);
-    release(&bcache_lock[target]);
-    release(&bcache_lock[source]);
-    release(&bcache.lock);
-    return lru_buf;
+  // judge if be used
+  if(lru_buf->refcnt) {
+    if(source != target)
+      release(&bcache_lock[source]);
+    goto search;
   }
-  else {
-    acquire(&bcache_lock[source]);
-    lru_buf->dev = dev;
-    lru_buf->blockno = blockno;
-    lru_buf->valid = 0;
-    lru_buf->refcnt = 1;
-    acquiresleep(&lru_buf->lock);
+
+  // remove from source bucket
+  b = hash_bucket[source];
+  while(b && b->next != lru_buf)
+    b = b->next;
+  if(b == 0)
+    hash_bucket[source] = lru_buf->next;
+  else
+    b->next = lru_buf->next; 
+  if(source != target)
     release(&bcache_lock[source]);
-    return lru_buf;
-  }
+  release(&bcache.lock);
+  // insert into target bucket
+  lru_buf->next = hash_bucket[target];
+  hash_bucket[target] = lru_buf;
+
+  // assign val to lru_buf
+  lru_buf->dev = dev;
+  lru_buf->blockno = blockno;
+  lru_buf->valid = 0;
+  lru_buf->refcnt = 1;
+  lru_buf->timestamp = ticks;
+
+  // return a locked buf
+  acquiresleep(&lru_buf->lock);
+
+  release(&bcache_lock[target]);
+  return lru_buf;
   
   panic("bget: no buffers");
 }
@@ -185,9 +182,7 @@ brelse(struct buf *b)
     // b->prev = &bcache.head;
     // bcache.head.next->prev = b;
     // bcache.head.next = b;
-    acquire(&tickslock);
     b->timestamp = ticks;
-    release(&tickslock);
   }
 
   release(&bcache_lock[i]);
