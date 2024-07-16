@@ -43,8 +43,12 @@ binit(void)
     initlock(&bcache_lock[i], "bcache_lock");
 
   int i = 0;
+  for(i = 0; i < BUCKETS; i ++)
+    hash_bucket[i] = 0;
+  i = 0;
   for(b = bcache.buf; b < bcache.buf + NBUF; b++){
     initsleeplock(&b->lock, "buffer");
+    b->blockno = i;
     b->timestamp = 0;
     b->next = hash_bucket[i];
     hash_bucket[i] = b;
@@ -59,16 +63,18 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
-  int i = blockno % BUCKETS;
-
-  acquire(&bcache_lock[i]);
-
+  int target = blockno % BUCKETS;
+  int i = target;
+  acquire(&bcache_lock[target]);
+ 
   // Is the block already cached?
-  for(b = hash_bucket[i]; b; b = b->next) {
+  for(b = hash_bucket[target]; b; b = b->next) {
     if(b->dev == dev && b->blockno == blockno) {
       b->refcnt ++;
+      release(&bcache_lock[target]);
       acquiresleep(&b->lock);
-      release(&bcache_lock[i]);
+      // ! big bug
+      // printf("hit and out\n");
       return b;
     }
   }
@@ -77,12 +83,26 @@ bget(uint dev, uint blockno)
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  struct buf* lru_buf;
-  search:
-  lru_buf = 0;
+  struct buf* lru_buf = 0;
+  for(b = hash_bucket[i]; b; b = b->next) {
+    if(b->dev == dev && b->refcnt == 0) {
+      if(lru_buf == 0)
+        lru_buf = b;
+      else if(lru_buf->timestamp > b->timestamp)
+        lru_buf = b;
+    }
+  }
+  if(lru_buf) {
+    goto find;
+  }
   acquire(&bcache.lock);
+  search:
+  // printf("start search\n");
+  lru_buf = 0;
   for(i = 0; i < BUCKETS; i ++) {
-    for(b = hash_bucket[i]; b; b = b->next) {
+    for(b = hash_bucket[i]; b != 0; b = b->next) {
+      // printf("*");
+      // printf("%p", (uint64)b);
       if(b->refcnt == 0) {
         if(lru_buf == 0)
           lru_buf = b;
@@ -92,10 +112,13 @@ bget(uint dev, uint blockno)
       }
     }
   }
+  // printf("lru_buf get\n");
   if(lru_buf == 0)
     panic("bget(): no buffers");
-  int source = ((lru_buf - bcache.buf) / sizeof(struct buf)) % BUCKETS;
-  int target = blockno % BUCKETS;
+  // 不能用int source = ((lru_buf - bcache.buf) / sizeof(struct buf)) % BUCKETS;
+  // 因为使用下标进行hash的做法只适用于初始化，之后的hash函数需要根据blockno进行hash
+  int source = lru_buf->blockno % BUCKETS;
+  
   // get source and target in turn to reduce redundancy
   if(source != target)
     acquire(&bcache_lock[source]);
@@ -106,21 +129,24 @@ bget(uint dev, uint blockno)
     goto search;
   }
 
+  // printf("remove source\n");
   // remove from source bucket
   b = hash_bucket[source];
   while(b && b->next != lru_buf)
     b = b->next;
-  if(b == 0)
-    hash_bucket[source] = lru_buf->next;
+  if(b == 0) {
+    // printf("%p\n", hash_bucket[source]);
+    hash_bucket[source] = hash_bucket[source]->next;
+  }
   else
     b->next = lru_buf->next; 
   if(source != target)
     release(&bcache_lock[source]);
-  release(&bcache.lock);
   // insert into target bucket
   lru_buf->next = hash_bucket[target];
   hash_bucket[target] = lru_buf;
-
+  release(&bcache.lock);
+  find:
   // assign val to lru_buf
   lru_buf->dev = dev;
   lru_buf->blockno = blockno;
@@ -132,6 +158,7 @@ bget(uint dev, uint blockno)
   acquiresleep(&lru_buf->lock);
 
   release(&bcache_lock[target]);
+  // printf("allocate and out\n");
   return lru_buf;
   
   panic("bget: no buffers");
@@ -165,23 +192,16 @@ bwrite(struct buf *b)
 void
 brelse(struct buf *b)
 {
-  int i = ((b - bcache.buf) / sizeof(struct buf)) % BUCKETS;
-  acquire(&bcache_lock[i]);
+  // int i = ((b - bcache.buf) / sizeof(struct buf)) % BUCKETS;
+  int i = b->blockno % BUCKETS;
   // printf("sss");
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
   releasesleep(&b->lock);
-
+  acquire(&bcache_lock[i]);
   b->refcnt--;
   if (b->refcnt == 0) {
-    // no one is waiting for it.
-    // b->next->prev = b->prev;
-    // b->prev->next = b->next;
-    // b->next = bcache.head.next;
-    // b->prev = &bcache.head;
-    // bcache.head.next->prev = b;
-    // bcache.head.next = b;
     b->timestamp = ticks;
   }
 
@@ -190,7 +210,7 @@ brelse(struct buf *b)
 
 void
 bpin(struct buf *b) {
-  int i = ((b - bcache.buf) / sizeof(struct buf)) % BUCKETS;
+  int i = b->blockno % BUCKETS;
   acquire(&bcache_lock[i]);
   b->refcnt++;
   release(&bcache_lock[i]);
@@ -198,7 +218,7 @@ bpin(struct buf *b) {
 
 void
 bunpin(struct buf *b) {
-  int i = ((b - bcache.buf) / sizeof(struct buf)) % BUCKETS;
+  int i = b->blockno % BUCKETS;
   acquire(&bcache_lock[i]);
   b->refcnt--;
   release(&bcache_lock[i]);

@@ -506,8 +506,13 @@ sched(void)
 
   if(!holding(&p->lock))
     panic("sched p->lock");
-  if(mycpu()->noff != 1)
+  if(mycpu()->noff != 1) {
+    backtrace();
+    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    printf("%d, %d\n", mycpu()->intena, mycpu()->noff);
     panic("sched locks");
+  }
   if(p->state == RUNNING)
     panic("sched running");
   if(intr_get())
