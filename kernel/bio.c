@@ -22,6 +22,8 @@
 #include "defs.h"
 #include "fs.h"
 #include "buf.h"
+#include "proc.h"
+struct cpu;
 
 #define BUCKETS 13
 extern uint ticks;
@@ -66,7 +68,7 @@ bget(uint dev, uint blockno)
   int target = blockno % BUCKETS;
   int i = target;
   acquire(&bcache_lock[target]);
- 
+
   // Is the block already cached?
   for(b = hash_bucket[target]; b; b = b->next) {
     if(b->dev == dev && b->blockno == blockno) {
@@ -78,8 +80,7 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
-  // too early, may cause remap, then refree, then crash
-  // release(&bcache_lock[i]);
+  // release(&bcache_lock[i]);        // too early, may cause remap, then refree, then crash
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
@@ -92,17 +93,14 @@ bget(uint dev, uint blockno)
         lru_buf = b;
     }
   }
-  if(lru_buf) {
+  if(lru_buf)
     goto find;
-  }
+
   acquire(&bcache.lock);
   search:
-  // printf("start search\n");
   lru_buf = 0;
   for(i = 0; i < BUCKETS; i ++) {
     for(b = hash_bucket[i]; b != 0; b = b->next) {
-      // printf("*");
-      // printf("%p", (uint64)b);
       if(b->refcnt == 0) {
         if(lru_buf == 0)
           lru_buf = b;
@@ -112,42 +110,32 @@ bget(uint dev, uint blockno)
       }
     }
   }
-  // printf("lru_buf get\n");
   if(lru_buf == 0)
     panic("bget(): no buffers");
   // 不能用int source = ((lru_buf - bcache.buf) / sizeof(struct buf)) % BUCKETS;
   // 因为使用下标进行hash的做法只适用于初始化，之后的hash函数需要根据blockno进行hash
   int source = lru_buf->blockno % BUCKETS;
-  
-  // get source and target in turn to reduce redundancy
   if(source != target)
     acquire(&bcache_lock[source]);
-  // judge if be used
   if(lru_buf->refcnt) {
     if(source != target)
       release(&bcache_lock[source]);
     goto search;
   }
-
-  // printf("remove source\n");
-  // remove from source bucket
   b = hash_bucket[source];
   while(b && b->next != lru_buf)
     b = b->next;
-  if(b == 0) {
-    // printf("%p\n", hash_bucket[source]);
+  if(b == 0)
     hash_bucket[source] = hash_bucket[source]->next;
-  }
   else
     b->next = lru_buf->next; 
   if(source != target)
     release(&bcache_lock[source]);
-  // insert into target bucket
   lru_buf->next = hash_bucket[target];
   hash_bucket[target] = lru_buf;
   release(&bcache.lock);
   find:
-  // assign val to lru_buf
+  // why this acquiresleep never cause contend ?
   lru_buf->dev = dev;
   lru_buf->blockno = blockno;
   lru_buf->valid = 0;
@@ -156,12 +144,9 @@ bget(uint dev, uint blockno)
 
   // return a locked buf
   acquiresleep(&lru_buf->lock);
-
+  for(int j = 0; j < 10000000; j ++) ;
   release(&bcache_lock[target]);
-  // printf("allocate and out\n");
   return lru_buf;
-  
-  panic("bget: no buffers");
 }
 
 // Return a locked buf with the contents of the indicated block.
