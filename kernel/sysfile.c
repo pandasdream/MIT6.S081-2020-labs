@@ -291,12 +291,14 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  int loop = 0;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
 
   begin_op();
 
+  reopen:
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -320,6 +322,21 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  
+  if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
+    if(loop > 10) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    memset((void*)path, 0, MAXPATH);
+    if((readi(ip, 0, (uint64)path, 0, MAXPATH)) == 0)
+      panic("sys_open: readi");
+    loop ++;
+    iunlockput(ip);
+    goto reopen;
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -484,3 +501,79 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_symlink(void)
+{
+  char name[DIRSIZ], target[MAXPATH], path[MAXPATH];
+  struct inode *ip = 0, *dp;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if((dp = nameiparent(path, name)) == 0) {
+    end_op();
+    return -1;
+  }
+  ilock(dp);
+
+  if((ip = dirlookup(dp, name, 0)) != 0){
+    iunlockput(dp);
+    ilock(ip);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  if((ip = ialloc(dp->dev, T_SYMLINK)) == 0) {
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH)
+    panic("sys_symlink: writei");
+  ip->nlink ++;
+  ip->major = 0;
+  ip->minor = 0;
+  iupdate(ip);
+  if(dirlink(dp, name, ip->inum) < 0) {
+    iunlockput(dp);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(dp);
+  iunlockput(ip);
+  
+  end_op();
+  return 0;
+}
+
+// uint64
+// sys_symlink(void)
+// {
+//   char target[MAXPATH];
+//   memset(target, 0, sizeof(target));
+//   char path[MAXPATH];
+//   if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0){
+//     return -1;
+//   }
+  
+//   struct inode *ip;
+
+//   begin_op();
+//   if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+//     end_op();
+//     return -1;
+//   }
+
+//   if(writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH){
+//     // panic("symlink write failed");
+//     return -1;
+//   }
+
+//   iunlockput(ip);
+//   end_op();
+//   return 0;
+// }
