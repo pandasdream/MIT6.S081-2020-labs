@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -482,5 +483,109 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 vstart, offset, len;
+  int prot, flags, fd;
+  struct proc* proc = myproc();
+  if(argaddr(1, (uint64*)&len) < 0)
+    return -1;
+  if(argint(2, &prot) < 0)
+    return -1;
+  if(argint(3, &flags) < 0)
+    return -1;
+  if(argint(4, &fd) < 0)
+    return -1;
+  if(argaddr(5, &offset) < 0)
+    return -1;
+  if(((!proc->ofile[fd]->readable) && (prot & PROT_READ)) ||
+   ((!proc->ofile[fd]->writable) && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE)))
+    return -1;
+  printf("yes\n");
+  len = PGROUNDUP(len);
+  struct VMA* v = 0;
+  uint64 lo = FILETOP;
+  for(int i = 0; i < 16; i ++) {
+    if(proc->vmas[i].valid) {
+      lo = proc->vmas[i].vstart;
+    }
+    else if(v == 0)
+      v = proc->vmas + i;
+  }
+  vstart = PGROUNDDOWN(lo - len);
+  if(vstart < proc->sz || lo - len > lo)
+    return -1;
+  v->valid = 1;
+  v->vstart = vstart;
+  v->prot = prot;
+  v->flags = flags;
+  v->fd = fd;
+  v->len = len;
+  v->offset = offset;
+  v->file = proc->ofile[fd];
+  filedup(v->file);
+  return v->vstart;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, len;
+  if(argaddr(0, &addr) < 0)
+    return -1;
+  if(argaddr(1, &len) < 0)
+    return -1;
+  struct VMA *v = 0;
+  // struct proc *p = myproc();
+  // for(int i = 0; i < 16; i ++) {
+  //   v = p->vmas + i;
+  //   if(v->valid && v->vstart <= addr && v->vstart + v->len >= addr + len)
+  //     break;
+  // }
+  // if(v == 0)
+  //   panic("sys_munmap: no corresponding vma");
+  // struct file *f = v->file;
+  // if(v->flags == MAP_SHARED) {
+  //   int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+  //   int i = 0;
+  //   int r = 0;
+  //   uint off = v->offset;
+  //   while(i < len){
+  //     int n1 = len - i;
+  //     if(n1 > max)
+  //       n1 = max;
+
+  //     begin_op();
+  //     ilock(f->ip);
+  //     if ((r = writei(f->ip, 1, addr + i, off, n1)) > 0)
+  //       off += r;
+  //     iunlock(f->ip);
+  //     end_op();
+
+  //     if(r != n1){
+  //       // error from writei
+  //       break;
+  //     }
+  //     i += r;
+  //   }
+  // }
+  // int npages = PGROUNDUP(len) / PGSIZE;
+  // uvmunmap(p->pagetable, addr, npages, 1);
+  // if(addr == v->vstart && PGROUNDUP(addr + len) == PGROUNDUP(v->vstart + v->len)) {
+  //   fileclose(v->file);
+  //   v->valid = 0;
+  // }
+  // else {
+  //   if(addr == v->vstart) {
+  //     v->vstart = PGROUNDUP(addr + len);
+  //     v->offset += PGROUNDUP(len);
+  //   }
+  //   v->len -= PGROUNDUP(len);
+  // }
+  vmaunmap(v, addr, len);
   return 0;
 }

@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "fcntl.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -180,3 +181,54 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int
+vmaunmap(struct VMA *v, uint64 addr, uint64 len)
+{
+  struct proc *p = myproc();
+  for(int i = 0; i < 16; i ++) {
+    v = p->vmas + i;
+    if(v->valid && v->vstart <= addr && v->vstart + v->len >= addr + len)
+      break;
+  }
+  if(v == 0)
+    panic("sys_munmap: no corresponding vma");
+  struct file *f = v->file;
+  if(v->flags == MAP_SHARED) {
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int i = 0;
+    int r = 0;
+    uint off = v->offset;
+    while(i < len){
+      int n1 = len - i;
+      if(n1 > max)
+        n1 = max;
+
+      begin_op();
+      ilock(f->ip);
+      if ((r = writei(f->ip, 1, addr + i, off, n1)) > 0)
+        off += r;
+      iunlock(f->ip);
+      end_op();
+
+      if(r != n1){
+        // error from writei
+        break;
+      }
+      i += r;
+    }
+  }
+  int npages = PGROUNDUP(len) / PGSIZE;
+  uvmunmap(p->pagetable, addr, npages, 1);
+  if(addr == v->vstart && PGROUNDUP(addr + len) == PGROUNDUP(v->vstart + v->len)) {
+    fileclose(v->file);
+    v->valid = 0;
+  }
+  else {
+    if(addr == v->vstart) {
+      v->vstart = PGROUNDUP(addr + len);
+      v->offset += PGROUNDUP(len);
+    }
+    v->len -= PGROUNDUP(len);
+  }
+  return 0;
+}

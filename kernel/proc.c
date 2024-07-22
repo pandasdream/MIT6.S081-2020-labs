@@ -296,6 +296,50 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // copy mapped memory to child
+  struct VMA *v, *nv;
+  pagetable_t old = p->pagetable;
+  pagetable_t new = np->pagetable;
+  for(int i = 0; i < 16; i ++) {
+    v = p->vmas + i;
+    nv = np->vmas + i;
+    if(v->valid) {
+      nv->fd = v->fd;
+      nv->file = v->file;
+      nv->flags = v->flags;
+      nv->len = v->len;
+      nv->vstart = v->vstart;
+      nv->prot = v->prot;
+      nv->valid = 1;
+      nv->offset = v->offset;
+      filedup(v->file);
+      pte_t *pte;
+      uint64 pa, i;
+      uint flags;
+      char *mem;
+
+      for(i = v->vstart; i < v->vstart + v->len; i += PGSIZE){
+        if((pte = walk(old, i, 0)) == 0)
+          continue;
+        if((*pte & PTE_V) == 0)
+          continue;
+        pa = PTE2PA(*pte);
+        flags = PTE_FLAGS(*pte);
+        if((mem = kalloc()) == 0)
+          goto err;
+        memmove(mem, (char*)pa, PGSIZE);
+        if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+          kfree(mem);
+          goto err;
+        }
+        continue;
+        err:
+          uvmunmap(new, v->vstart, i / PGSIZE, 1);
+          return -1;
+      }
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -351,6 +395,13 @@ exit(int status)
       fileclose(f);
       p->ofile[fd] = 0;
     }
+  }
+
+  struct VMA *v = 0;
+  for(int i = 0; i < 16; i ++) {
+    v = p->vmas + i;
+    if(v->valid)
+      vmaunmap(v, v->vstart, v->len);
   }
 
   begin_op();
